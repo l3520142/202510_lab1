@@ -11,6 +11,8 @@ ARG USERNAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
 
+RUN apk add  --no-cache pcre2 =10.46-r0
+
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
     && useradd --uid ${USER_UID} --gid ${USER_GID} -m ${USERNAME} -s /bin/bash \
     && mkdir -p /workspaces/202510_lab1 \
