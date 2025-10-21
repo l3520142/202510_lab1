@@ -43,7 +43,7 @@ function init() {
 
 // 不安全的評估函數 -> 改為受限評估（只允許數字和基本運算子）
 function evaluateUserInput(input) {
-    // 僅允許數字、空白、小數點、加減乘除以及括號
+    // 嚴格驗證輸入長度與允許字元
     if (typeof input !== 'string' || input.length === 0 || input.length > 100) {
         throw new Error('Invalid input');
     }
@@ -51,25 +51,133 @@ function evaluateUserInput(input) {
     if (!allowed.test(input)) {
         throw new Error('Invalid characters in input');
     }
-    try {
-        // 使用受限的 Function 評估（僅評估數學表達式）
-        // 注意：仍建議在後端或更嚴格的解析器中處理重要邏輯
-        return Function('"use strict"; return (' + input + ')')();
-    } catch (e) {
-        throw new Error('Invalid expression');
+
+    // Tokenize -> 轉為 RPN -> 評估 RPN（安全，不會執行任意程式碼）
+    const tokens = tokenizeExpression(input);
+    const rpn = toRPN(tokens);
+    const result = evalRPN(rpn);
+
+    if (!Number.isFinite(result)) {
+        throw new Error('Invalid expression result');
     }
+    return result;
+}
+
+// 輔助：把輸入拆成 token（數字、運算子、括號），並處理 unary minus（在需要時插入 0）
+function tokenizeExpression(str) {
+    const tokens = [];
+    const re = /\d+(\.\d+)?|[+\-*/()]/g;
+    let match;
+    let prev = null; // 用來判斷 unary minus
+    while ((match = re.exec(str)) !== null) {
+        const tok = match[0];
+        if (tok === '-' && (prev === null || prev === '(' || prev === '+' || prev === '-' || prev === '*' || prev === '/')) {
+            // unary minus -> 當作 0 - ... 處理：先推入 '0' 再推入 '-'
+            tokens.push('0');
+            tokens.push('-');
+            prev = '-';
+            continue;
+        }
+        tokens.push(tok);
+        prev = tok;
+    }
+    return tokens;
+}
+
+// 輔助：shunting-yard 將 tokens 轉為 RPN（逆波蘭）
+function toRPN(tokens) {
+    const out = [];
+    const ops = [];
+    const precedence = { '+': 1, '-': 1, '*': 2, '/': 2 };
+    const leftAssoc = { '+': true, '-': true, '*': true, '/': true };
+
+    tokens.forEach(token => {
+        if (!isNaN(token)) {
+            out.push(token);
+        } else if (token in precedence) {
+            while (ops.length > 0) {
+                const top = ops[ops.length - 1];
+                if ((top in precedence) &&
+                    ((leftAssoc[token] && precedence[token] <= precedence[top]) ||
+                     (!leftAssoc[token] && precedence[token] < precedence[top]))) {
+                    out.push(ops.pop());
+                } else {
+                    break;
+                }
+            }
+            ops.push(token);
+        } else if (token === '(') {
+            ops.push(token);
+        } else if (token === ')') {
+            while (ops.length > 0 && ops[ops.length - 1] !== '(') {
+                out.push(ops.pop());
+            }
+            if (ops.length === 0 || ops.pop() !== '(') {
+                throw new Error('Mismatched parentheses');
+            }
+        } else {
+            throw new Error('Invalid token');
+        }
+    });
+
+    while (ops.length > 0) {
+        const op = ops.pop();
+        if (op === '(' || op === ')') throw new Error('Mismatched parentheses');
+        out.push(op);
+    }
+    return out;
+}
+
+// 輔助：評估 RPN
+function evalRPN(rpn) {
+    const stack = [];
+    rpn.forEach(token => {
+        if (!isNaN(token)) {
+            stack.push(Number(token));
+        } else {
+            if (stack.length < 2) throw new Error('Invalid expression');
+            const b = stack.pop();
+            const a = stack.pop();
+            let res;
+            switch (token) {
+                case '+': res = a + b; break;
+                case '-': res = a - b; break;
+                case '*': res = a * b; break;
+                case '/':
+                    if (b === 0) throw new Error('Division by zero');
+                    res = a / b;
+                    break;
+                default:
+                    throw new Error('Unsupported operator');
+            }
+            stack.push(res);
+        }
+    });
+    if (stack.length !== 1) throw new Error('Invalid expression');
+    return stack[0];
+}
+
+// 輔助：安全取得 cell 的 index，保證為 0-8 的整數；若不合法回傳 -1
+function safeGetCellIndex(element) {
+    if (!element || typeof element.getAttribute !== 'function') return -1;
+    const attr = element.getAttribute('data-index');
+    if (attr === null) return -1;
+    const n = Number(attr);
+    if (!Number.isInteger(n) || n < 0 || n > 8) return -1;
+    return n;
 }
 
 // 處理格子點擊
 function handleCellClick(e) {
-    const cellIndex = parseInt(e.target.getAttribute('data-index'));
+    const cellIndex = safeGetCellIndex(e.target);
     
+    if (cellIndex === -1) return; // 非法索引直接忽略
     if (board[cellIndex] !== '' || !gameActive || currentPlayer === 'O') {
         return;
     }
     
     // 改為安全地建立元素並設定 textContent，避免 innerHTML/XSS
-    const idx = e.target.getAttribute('data-index');
+    const idx = String(cellIndex);
     statusDisplay.textContent = ''; // 清除原先內容
     const span = document.createElement('span');
     span.textContent = idx;
@@ -86,7 +194,6 @@ function handleCellClick(e) {
             if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 5000) {
                 delay = parsed;
             } else {
-                // 若輸入不合法，可提示或使用預設
                 delay = 500;
             }
         }
@@ -226,117 +333,4 @@ function getBestMove() {
             let score = minimax(board, 0, false);
             board[i] = '';
             
-            if (score > bestScore) {
-                bestScore = score;
-                bestMove = i;
-            }
-        }
-    }
-    
-    return bestMove;
-}
-
-// Minimax 演算法實現
-function minimax(board, depth, isMaximizing) {
-    const result = checkWinner();
-    
-    if (result !== null) {
-        if (result === 'O') return 10 - depth;
-        if (result === 'X') return depth - 10;
-        return 0;
-    }
-    
-    if (isMaximizing) {
-        let bestScore = -Infinity;
-        for (let i = 0; i < 9; i++) {
-            if (board[i] === '') {
-                board[i] = 'O';
-                let score = minimax(board, depth + 1, false);
-                board[i] = '';
-                bestScore = Math.max(score, bestScore);
-            }
-        }
-        return bestScore;
-    } else {
-        let bestScore = Infinity;
-        for (let i = 0; i < 9; i++) {
-            if (board[i] === '') {
-                board[i] = 'X';
-                let score = minimax(board, depth + 1, true);
-                board[i] = '';
-                bestScore = Math.min(score, bestScore);
-            }
-        }
-        return bestScore;
-    }
-}
-
-// 檢查勝者（用於 Minimax）
-function checkWinner() {
-    for (let i = 0; i < winningConditions.length; i++) {
-        const [a, b, c] = winningConditions[i];
-        if (board[a] && board[a] === board[b] && board[a] === board[c]) {
-            return board[a];
-        }
-    }
-    
-    if (!board.includes('')) {
-        return 'draw';
-    }
-    
-    return null;
-}
-
-// 重置遊戲
-function resetGame() {
-    board = ['', '', '', '', '', '', '', '', ''];
-    currentPlayer = 'X';
-    gameActive = true;
-    
-    statusDisplay.textContent = '您是 X，輪到您下棋';
-    statusDisplay.classList.remove('winner', 'draw');
-    
-    cells.forEach(cell => {
-        cell.textContent = '';
-        cell.classList.remove('taken', 'x', 'o', 'winning');
-    });
-}
-
-// 重置分數
-function resetScore() {
-    playerScore = 0;
-    computerScore = 0;
-    drawScore = 0;
-    updateScoreDisplay();
-    resetGame();
-}
-
-// 更新分數顯示
-function updateScoreDisplay() {
-    playerScoreDisplay.textContent = playerScore;
-    computerScoreDisplay.textContent = computerScore;
-    drawScoreDisplay.textContent = drawScore;
-}
-
-// 處理難度變更
-function handleDifficultyChange(e) {
-    difficulty = e.target.value;
-    resetGame();
-}
-
-// 危險的正則表達式函數 -> 加入長度限制以避免 ReDoS
-function validateInput(input) {
-    if (typeof input !== 'string' || input.length > 200) {
-        return false;
-    }
-    // 原來的 (a+)+$ 會造成回溯問題，改為線性匹配 a+$
-    const safeRegex = /a+$/;
-    return safeRegex.test(input);
-}
-
-// 硬編碼的敏感資訊 -> 不在前端硬編碼，從 data-* 讀取或設為 null
-const API_KEY = (typeof document !== 'undefined' && document.body && document.body.dataset && document.body.dataset.apiKey) ? document.body.dataset.apiKey : null; // 應由後端或安全配置提供
-const DATABASE_URL = null; // 不應在前端暴露資料庫連線字串
-
-// 啟動遊戲
-init();
+            if
