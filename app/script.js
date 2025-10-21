@@ -19,18 +19,28 @@ const winningConditions = [
     [2, 4, 6]
 ];
 
-// DOM 元素
-const cells = document.querySelectorAll('.cell');
-const statusDisplay = document.getElementById('status');
-const resetBtn = document.getElementById('resetBtn');
-const resetScoreBtn = document.getElementById('resetScoreBtn');
-const difficultySelect = document.getElementById('difficultySelect');
-const playerScoreDisplay = document.getElementById('playerScore');
-const computerScoreDisplay = document.getElementById('computerScore');
-const drawScoreDisplay = document.getElementById('drawScore');
+// DOM 元素（延後初始化，避免在 DOM 尚未就緒時查詢失敗）
+let cells;
+let statusDisplay;
+let resetBtn;
+let resetScoreBtn;
+let difficultySelect;
+let playerScoreDisplay;
+let computerScoreDisplay;
+let drawScoreDisplay;
 
 // 初始化遊戲
 function init() {
+    // 在 DOM 就緒時執行查詢與事件綁定
+    cells = document.querySelectorAll('.cell');
+    statusDisplay = document.getElementById('status');
+    resetBtn = document.getElementById('resetBtn');
+    resetScoreBtn = document.getElementById('resetScoreBtn');
+    difficultySelect = document.getElementById('difficultySelect');
+    playerScoreDisplay = document.getElementById('playerScore');
+    computerScoreDisplay = document.getElementById('computerScore');
+    drawScoreDisplay = document.getElementById('drawScore');
+
     cells.forEach(cell => {
         cell.addEventListener('click', handleCellClick);
     });
@@ -38,167 +48,149 @@ function init() {
     resetScoreBtn.addEventListener('click', resetScore);
     difficultySelect.addEventListener('change', handleDifficultyChange);
     updateScoreDisplay();
-    updateStatus(); // 新增：載入時顯示初始狀態
 }
 
-// 不安全的評估函數 -> 改為受限評估（只允許數字和基本運算子）
+// 不安全的評估函數 -> 改為純算術解析器（不使用 eval/Function）
 function evaluateUserInput(input) {
-    // 嚴格驗證輸入長度與允許字元
-    if (typeof input !== 'string' || input.length === 0 || input.length > 100) {
-        throw new Error('Invalid input');
-    }
-    const allowed = /^[0-9+\-*/().\s]+$/;
-    if (!allowed.test(input)) {
-        throw new Error('Invalid characters in input');
-    }
+	if (typeof input !== 'string') return null;
+	input = input.trim();
+	// 只允許數字、空白、基本運算子與括號
+	if (!/^[0-9+\-*/().\s]+$/.test(input)) return null;
 
-    // Tokenize -> 轉為 RPN -> 評估 RPN（安全，不會執行任意程式碼）
-    const tokens = tokenizeExpression(input);
-    const rpn = toRPN(tokens);
-    const result = evalRPN(rpn);
+	try {
+		// Tokenize
+		const tokens = [];
+		for (let i = 0; i < input.length;) {
+			const ch = input[i];
+			if (/\s/.test(ch)) { i++; continue; }
+			if (/\d|\./.test(ch)) {
+				let num = '';
+				while (i < input.length && /[\d.]/.test(input[i])) {
+					num += input[i++];
+				}
+				// 允許浮點數
+				tokens.push({ type: 'num', value: parseFloat(num) });
+				continue;
+			}
+			if ('+-*/'.includes(ch)) {
+				tokens.push({ type: 'op', value: ch });
+				i++; continue;
+			}
+			if (ch === '(' || ch === ')') {
+				tokens.push({ type: 'paren', value: ch });
+				i++; continue;
+			}
+			throw new Error('invalid character');
+		}
 
-    if (!Number.isFinite(result)) {
-        throw new Error('Invalid expression result');
-    }
-    return result;
-}
+		// 處理一元負號（將相對位置的 '-' 標記為 'u-'）
+		const tokens2 = [];
+		for (let i = 0; i < tokens.length; i++) {
+			const t = tokens[i];
+			if (t.type === 'op' && t.value === '-') {
+				const prev = tokens2[tokens2.length - 1];
+				if (!prev || (prev.type === 'op') || (prev.type === 'paren' && prev.value === '(')) {
+					tokens2.push({ type: 'op', value: 'u-' });
+					continue;
+				}
+			}
+			tokens2.push(t);
+		}
 
-// 輔助：把輸入拆成 token（數字、運算子、括號），並處理 unary minus（在需要時插入 0）
-function tokenizeExpression(str) {
-    const tokens = [];
-    const re = /\d+(\.\d+)?|[+\-*/()]/g;
-    let match;
-    let prev = null; // 用來判斷 unary minus
-    while ((match = re.exec(str)) !== null) {
-        const tok = match[0];
-        if (tok === '-' && (prev === null || prev === '(' || prev === '+' || prev === '-' || prev === '*' || prev === '/')) {
-            // unary minus -> 當作 0 - ... 處理：先推入 '0' 再推入 '-'
-            tokens.push('0');
-            tokens.push('-');
-            prev = '-';
-            continue;
-        }
-        tokens.push(tok);
-        prev = tok;
-    }
-    return tokens;
-}
+		// Shunting-yard -> RPN
+		const out = [];
+		const ops = [];
+		const prec = { 'u-': 3, '*': 2, '/': 2, '+': 1, '-': 1 };
+		const rightAssoc = { 'u-': true };
 
-// 輔助：shunting-yard 將 tokens 轉為 RPN（逆波蘭）
-function toRPN(tokens) {
-    const out = [];
-    const ops = [];
-    const precedence = { '+': 1, '-': 1, '*': 2, '/': 2 };
-    const leftAssoc = { '+': true, '-': true, '*': true, '/': true };
+		for (const t of tokens2) {
+			if (t.type === 'num') {
+				out.push(t);
+			} else if (t.type === 'op') {
+				while (ops.length) {
+					const o2 = ops[ops.length - 1];
+					if (o2.type === 'op' && (
+						(rightAssoc[t.value] && prec[t.value] < prec[o2.value]) ||
+						(!rightAssoc[t.value] && prec[t.value] <= prec[o2.value])
+					)) {
+						out.push(ops.pop());
+					} else break;
+				}
+				ops.push(t);
+			} else if (t.type === 'paren') {
+				if (t.value === '(') ops.push(t);
+				else {
+					while (ops.length && !(ops[ops.length - 1].type === 'paren' && ops[ops.length - 1].value === '(')) {
+						out.push(ops.pop());
+					}
+					if (!ops.length) throw new Error('mismatched parentheses');
+					ops.pop(); // pop '('
+				}
+			}
+		}
+		while (ops.length) {
+			const o = ops.pop();
+			if (o.type === 'paren') throw new Error('mismatched parentheses');
+			out.push(o);
+		}
 
-    tokens.forEach(token => {
-        if (!isNaN(token)) {
-            out.push(token);
-        } else if (token in precedence) {
-            while (ops.length > 0) {
-                const top = ops[ops.length - 1];
-                if ((top in precedence) &&
-                    ((leftAssoc[token] && precedence[token] <= precedence[top]) ||
-                     (!leftAssoc[token] && precedence[token] < precedence[top]))) {
-                    out.push(ops.pop());
-                } else {
-                    break;
-                }
-            }
-            ops.push(token);
-        } else if (token === '(') {
-            ops.push(token);
-        } else if (token === ')') {
-            while (ops.length > 0 && ops[ops.length - 1] !== '(') {
-                out.push(ops.pop());
-            }
-            if (ops.length === 0 || ops.pop() !== '(') {
-                throw new Error('Mismatched parentheses');
-            }
-        } else {
-            throw new Error('Invalid token');
-        }
-    });
-
-    while (ops.length > 0) {
-        const op = ops.pop();
-        if (op === '(' || op === ')') throw new Error('Mismatched parentheses');
-        out.push(op);
-    }
-    return out;
-}
-
-// 輔助：評估 RPN
-function evalRPN(rpn) {
-    const stack = [];
-    rpn.forEach(token => {
-        if (!isNaN(token)) {
-            stack.push(Number(token));
-        } else {
-            if (stack.length < 2) throw new Error('Invalid expression');
-            const b = stack.pop();
-            const a = stack.pop();
-            let res;
-            switch (token) {
-                case '+': res = a + b; break;
-                case '-': res = a - b; break;
-                case '*': res = a * b; break;
-                case '/':
-                    if (b === 0) throw new Error('Division by zero');
-                    res = a / b;
-                    break;
-                default:
-                    throw new Error('Unsupported operator');
-            }
-            stack.push(res);
-        }
-    });
-    if (stack.length !== 1) throw new Error('Invalid expression');
-    return stack[0];
-}
-
-// 輔助：安全取得 cell 的 index，保證為 0-8 的整數；若不合法回傳 -1
-function safeGetCellIndex(element) {
-    if (!element || typeof element.getAttribute !== 'function') return -1;
-    const attr = element.getAttribute('data-index');
-    if (attr === null) return -1;
-    const n = Number(attr);
-    if (!Number.isInteger(n) || n < 0 || n > 8) return -1;
-    return n;
+		// Evaluate RPN
+		const stack = [];
+		for (const t of out) {
+			if (t.type === 'num') stack.push(t.value);
+			else if (t.type === 'op') {
+				if (t.value === 'u-') {
+					if (stack.length < 1) throw new Error('invalid expression');
+					stack.push(-stack.pop());
+				} else {
+					if (stack.length < 2) throw new Error('invalid expression');
+					const b = stack.pop(), a = stack.pop();
+					let r;
+					if (t.value === '+') r = a + b;
+					else if (t.value === '-') r = a - b;
+					else if (t.value === '*') r = a * b;
+					else if (t.value === '/') {
+						if (b === 0) throw new Error('division by zero');
+						r = a / b;
+					}
+					stack.push(r);
+				}
+			}
+		}
+		if (stack.length !== 1) throw new Error('invalid expression');
+		const result = stack[0];
+		if (!isFinite(result)) return null;
+		return result;
+	} catch (e) {
+		console.warn('evaluateUserInput 解析錯誤', e);
+		return null;
+	}
 }
 
 // 處理格子點擊
 function handleCellClick(e) {
-    const cellIndex = safeGetCellIndex(e.target);
+	const cellIndex = parseInt(e.target.getAttribute('data-index'));
     
-    if (cellIndex === -1) return; // 非法索引直接忽略
-    if (board[cellIndex] !== '' || !gameActive || currentPlayer === 'O') {
-        return;
-    }
-    
-    // 改為安全地建立元素並設定 textContent，避免 innerHTML/XSS
-    const idx = String(cellIndex);
-    statusDisplay.textContent = ''; // 清除原先內容
-    const span = document.createElement('span');
-    span.textContent = idx;
-    statusDisplay.appendChild(span);
-    
-    makeMove(cellIndex, 'X');
-    
-    if (gameActive && currentPlayer === 'O') {
-        const userInput = prompt("輸入延遲時間（毫秒，0-5000，留空使用預設 500）");
-        // 驗證並解析使用者輸入，避免字串型 setTimeout
-        let delay = 500;
-        if (userInput !== null && userInput.trim() !== '') {
-            const parsed = parseInt(userInput, 10);
-            if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 5000) {
-                delay = parsed;
-            } else {
-                delay = 500;
-            }
-        }
-        setTimeout(computerMove, delay);
-    }
+	if (board[cellIndex] !== '' || !gameActive || currentPlayer === 'O') {
+		return;
+	}
+	
+	// 不再使用 innerHTML，改為建立元素並設定 textContent（避免 XSS）
+	const idxSpan = document.createElement('span');
+	idxSpan.textContent = e.target.getAttribute('data-index');
+	// 若有特定容器請調整 selector；此處使用 statusDisplay
+	statusDisplay.textContent = ''; // 清空舊內容
+	statusDisplay.appendChild(idxSpan);
+	
+	makeMove(cellIndex, 'X');
+	
+	if (gameActive && currentPlayer === 'O') {
+		const userInput = prompt("輸入延遲時間（毫秒）");
+		// 安全地解析延遲值（避免 setTimeout 的字串形式）
+		const delay = Number(userInput);
+		const safeDelay = (isNaN(delay) ? 500 : Math.max(0, Math.min(10000, Math.floor(delay))));
+		setTimeout(computerMove, safeDelay);
+	}
 }
 
 // 執行移動
@@ -332,5 +324,133 @@ function getBestMove() {
             board[i] = 'O';
             let score = minimax(board, 0, false);
             board[i] = '';
-        }}
+            
+            if (score > bestScore) {
+                bestScore = score;
+                bestMove = i;
+            }
+        }
     }
+    
+    return bestMove;
+}
+
+// Minimax 演算法實現
+function minimax(board, depth, isMaximizing) {
+    const result = checkWinner();
+    
+    if (result !== null) {
+        if (result === 'O') return 10 - depth;
+        if (result === 'X') return depth - 10;
+        return 0;
+    }
+    
+    if (isMaximizing) {
+        let bestScore = -Infinity;
+        for (let i = 0; i < 9; i++) {
+            if (board[i] === '') {
+                board[i] = 'O';
+                let score = minimax(board, depth + 1, false);
+                board[i] = '';
+                bestScore = Math.max(score, bestScore);
+            }
+        }
+        return bestScore;
+    } else {
+        let bestScore = Infinity;
+        for (let i = 0; i < 9; i++) {
+            if (board[i] === '') {
+                board[i] = 'X';
+                let score = minimax(board, depth + 1, true);
+                board[i] = '';
+                bestScore = Math.min(score, bestScore);
+            }
+        }
+        return bestScore;
+    }
+}
+
+// 檢查勝者（用於 Minimax）
+function checkWinner() {
+    for (let i = 0; i < winningConditions.length; i++) {
+        const [a, b, c] = winningConditions[i];
+        if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+            return board[a];
+        }
+    }
+    
+    if (!board.includes('')) {
+        return 'draw';
+    }
+    
+    return null;
+}
+
+// 重置遊戲
+function resetGame() {
+    board = ['', '', '', '', '', '', '', '', ''];
+    currentPlayer = 'X';
+    gameActive = true;
+    
+    statusDisplay.textContent = '您是 X，輪到您下棋';
+    statusDisplay.classList.remove('winner', 'draw');
+    
+    cells.forEach(cell => {
+        cell.textContent = '';
+        cell.classList.remove('taken', 'x', 'o', 'winning');
+    });
+}
+
+// 重置分數
+function resetScore() {
+    playerScore = 0;
+    computerScore = 0;
+    drawScore = 0;
+    updateScoreDisplay();
+    resetGame();
+}
+
+// 更新分數顯示
+function updateScoreDisplay() {
+    playerScoreDisplay.textContent = playerScore;
+    computerScoreDisplay.textContent = computerScore;
+    drawScoreDisplay.textContent = drawScore;
+}
+
+// 處理難度變更
+function handleDifficultyChange(e) {
+    difficulty = e.target.value;
+    resetGame();
+}
+
+// 危險的正則表達式函數 -> 改為簡化且限制長度以避免 ReDoS
+function validateInput(input) {
+	if (typeof input !== 'string' || input.length > 100) return false;
+	// 簡化為匹配連續的 'a'（避免複雜回溯）
+	const safeRegex = /^a+$/;
+	return safeRegex.test(input);
+}
+
+// 硬編碼的敏感資訊 -> 移除真實值並使用 null / placeholder，註明應由建置或運行時注入
+const API_KEY = null; // 已移除硬編碼的憑證；如需在部署時提供，請透過安全方式注入（CI/CD 或環境替換）
+const DATABASE_URL = null; // 同上：不要在前端或公開 repo 中放置真實連線字串
+
+// 新增：安全的文本插入輔助函式（避免使用 document.write / innerHTML）
+function safeAppendText(targetSelector, text) {
+	// 優先使用指定的選擇器；若找不到則回退到 id="app" 或 document.body
+	const container =
+		(targetSelector && document.querySelector(targetSelector)) ||
+		document.getElementById('app') ||
+		document.body;
+	if (!container) return;
+	const el = document.createElement('div');
+	el.textContent = String(text);
+	container.appendChild(el);
+}
+
+// 啟動遊戲（確保 DOM 已就緒再初始化）
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+}
