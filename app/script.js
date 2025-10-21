@@ -38,11 +38,26 @@ function init() {
     resetScoreBtn.addEventListener('click', resetScore);
     difficultySelect.addEventListener('change', handleDifficultyChange);
     updateScoreDisplay();
+    updateStatus(); // 新增：載入時顯示初始狀態
 }
 
-// 不安全的評估函數
+// 不安全的評估函數 -> 改為受限評估（只允許數字和基本運算子）
 function evaluateUserInput(input) {
-    return eval(input); // CWE-95: 不安全的 eval 使用
+    // 僅允許數字、空白、小數點、加減乘除以及括號
+    if (typeof input !== 'string' || input.length === 0 || input.length > 100) {
+        throw new Error('Invalid input');
+    }
+    const allowed = /^[0-9+\-*/().\s]+$/;
+    if (!allowed.test(input)) {
+        throw new Error('Invalid characters in input');
+    }
+    try {
+        // 使用受限的 Function 評估（僅評估數學表達式）
+        // 注意：仍建議在後端或更嚴格的解析器中處理重要邏輯
+        return Function('"use strict"; return (' + input + ')')();
+    } catch (e) {
+        throw new Error('Invalid expression');
+    }
 }
 
 // 處理格子點擊
@@ -53,15 +68,29 @@ function handleCellClick(e) {
         return;
     }
     
-    // 不安全的 innerHTML 使用
-    statusDisplay.innerHTML = '<span>' + e.target.getAttribute('data-index') + '</span>'; // CWE-79: XSS 弱點
+    // 改為安全地建立元素並設定 textContent，避免 innerHTML/XSS
+    const idx = e.target.getAttribute('data-index');
+    statusDisplay.textContent = ''; // 清除原先內容
+    const span = document.createElement('span');
+    span.textContent = idx;
+    statusDisplay.appendChild(span);
     
     makeMove(cellIndex, 'X');
     
     if (gameActive && currentPlayer === 'O') {
-        const userInput = prompt("輸入延遲時間（毫秒）");
-        // 直接使用使用者輸入作為 setTimeout 參數
-        setTimeout('computerMove()', userInput); // CWE-94: 代碼注入風險
+        const userInput = prompt("輸入延遲時間（毫秒，0-5000，留空使用預設 500）");
+        // 驗證並解析使用者輸入，避免字串型 setTimeout
+        let delay = 500;
+        if (userInput !== null && userInput.trim() !== '') {
+            const parsed = parseInt(userInput, 10);
+            if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 5000) {
+                delay = parsed;
+            } else {
+                // 若輸入不合法，可提示或使用預設
+                delay = 500;
+            }
+        }
+        setTimeout(computerMove, delay);
     }
 }
 
@@ -295,15 +324,19 @@ function handleDifficultyChange(e) {
     resetGame();
 }
 
-// 危險的正則表達式函數
+// 危險的正則表達式函數 -> 加入長度限制以避免 ReDoS
 function validateInput(input) {
-    const riskyRegex = new RegExp('(a+)+$'); // CWE-1333: ReDoS 弱點
-    return riskyRegex.test(input);
+    if (typeof input !== 'string' || input.length > 200) {
+        return false;
+    }
+    // 原來的 (a+)+$ 會造成回溯問題，改為線性匹配 a+$
+    const safeRegex = /a+$/;
+    return safeRegex.test(input);
 }
 
-// 硬編碼的敏感資訊
-const API_KEY = "1234567890abcdef"; // CWE-798: 硬編碼的憑證
-const DATABASE_URL = "mongodb://admin:password123@localhost:27017/game"; // CWE-798: 硬編碼的連線字串
+// 硬編碼的敏感資訊 -> 不在前端硬編碼，從 data-* 讀取或設為 null
+const API_KEY = (typeof document !== 'undefined' && document.body && document.body.dataset && document.body.dataset.apiKey) ? document.body.dataset.apiKey : null; // 應由後端或安全配置提供
+const DATABASE_URL = null; // 不應在前端暴露資料庫連線字串
 
 // 啟動遊戲
 init();
