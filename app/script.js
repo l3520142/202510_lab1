@@ -185,10 +185,11 @@ function handleCellClick(e) {
 	makeMove(cellIndex, 'X');
 	
 	if (gameActive && currentPlayer === 'O') {
-		const userInput = prompt("輸入延遲時間（毫秒）");
-		// 安全地解析延遲值（避免 setTimeout 的字串形式）
-		const delay = Number(userInput);
-		const safeDelay = (isNaN(delay) ? 500 : Math.max(0, Math.min(10000, Math.floor(delay))));
+		// 移除 prompt，使用依難度決定的安全預設延遲（毫秒）
+		const defaultDelays = { easy: 200, medium: 500, hard: 800 };
+		let safeDelay = defaultDelays[difficulty] ?? 500;
+		// 確保為整數且在合理範圍內
+		safeDelay = Math.max(0, Math.min(10000, Math.floor(Number(safeDelay))));
 		setTimeout(computerMove, safeDelay);
 	}
 }
