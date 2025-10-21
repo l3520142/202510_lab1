@@ -332,5 +332,5 @@ function getBestMove() {
             board[i] = 'O';
             let score = minimax(board, 0, false);
             board[i] = '';
-            
-            if
+        }}
+    }
